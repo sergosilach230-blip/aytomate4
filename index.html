@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AutoMate App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.css" rel="stylesheet">
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.14.1/mapbox-gl.js"></script>
+
+    <style>
+        :root { --accent: #00d9ff; --bg: #050505; --panel: rgba(15, 15, 15, 0.95); }
+        body { background: var(--bg); color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; margin: 0; touch-action: pan-x pan-y; }
+        
+        /* Экраны (SPA Логика) */
+        .screen { position: absolute; inset: 0; z-index: 10; background: var(--bg); transform: translateX(100%); transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1); overflow-y: auto; }
+        .screen.active { transform: translateX(0); }
+        #map-screen { z-index: 5; transform: translateX(0); overflow: hidden; } 
+
+        #map { height: 100vh; width: 100vw; position: absolute; inset: 0; }
+
+        /* ОПТИМИЗИРОВАННЫЕ ВЕКТОРНЫЕ ИКОНКИ (Без лагов) */
+        .custom-marker {
+            width: 32px; height: 32px;
+            cursor: pointer;
+            background: transparent !important; border: none !important;
+            filter: drop-shadow(0px 2px 3px rgba(0,0,0,0.8));
+            display: flex; justify-content: center; align-items: center;
+            will-change: transform;
+        }
+        .custom-marker svg { width: 100%; height: 100%; }
+
+        /* BOTTOM SHEET (ШТОРКА С 60FPS ФИЗИКОЙ) */
+        #bottom-sheet {
+            position: absolute; bottom: 0; left: 0; width: 100%;
+            background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            border-radius: 35px 35px 0 0; z-index: 100;
+            height: 90vh; box-shadow: 0 -10px 30px rgba(0,0,0,0.8);
+            will-change: transform;
+        }
+        .animate-snap { transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1); }
+        .drag-handle { width: 100%; height: 40px; display: flex; justify-content: center; align-items: center; cursor: grab; touch-action: none; }
+        .drag-line { width: 50px; height: 5px; background: rgba(255,255,255,0.3); border-radius: 10px; }
+
+        /* Скроллы */
+        .custom-scroll { overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; }
+        .custom-scroll::-webkit-scrollbar { display: none; }
+        .custom-scroll-x { overflow-x: auto; touch-action: pan-x; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; }
+        .custom-scroll-x::-webkit-scrollbar { display: none; }
+        
+        /* Маршрут UI */
+        .route-banner {
+            position: fixed; top: 50px; left: 50%; transform: translateX(-50%); width: 90%;
+            background: var(--accent); color: black; border-radius: 20px; padding: 16px 20px; z-index: 200;
+            display: none; justify-content: space-between; align-items: center; box-shadow: 0 10px 25px rgba(0,217,255,0.3);
+            animation: slideDown 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        @keyframes slideDown { from { transform: translate(-50%, -150%); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+        /* Попапы Mapbox */
+        .mapboxgl-popup-content { background: rgba(18,18,18,0.95) !important; color: white !important; border-radius: 24px !important; padding: 20px !important; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 15px 30px rgba(0,0,0,0.8) !important;}
+        .mapboxgl-popup-tip { border-top-color: rgba(18,18,18,0.95) !important; }
+        .mapboxgl-ctrl-logo, .mapboxgl-ctrl-bottom-right { display: none !important; }
+        
+        /* Sidebar (Левое Меню) */
+        #sidebar {
+            position: fixed; top: 0; left: 0; height: 100vh; width: 300px;
+            background: #0f0f0f; z-index: 500; border-right: 1px solid rgba(255,255,255,0.1);
+            transform: translateX(-100%); transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1); display: flex; flex-direction: column;
+        }
+        #sidebar.open { transform: translateX(0); }
+        #overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 400; display: none; transition: opacity 0.3s; }
+        
+        input:focus { outline: none; border-color: var(--accent); }
+
+        /* Skeleton Animation для прайса */
+        .skeleton { background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%); background-size: 200% 100%; animation: skeleton-loading 1.5s infinite; border-radius: 12px; }
+        @keyframes skeleton-loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* Custom Checkbox */
+        .service-checkbox {
+            appearance: none; width: 24px; height: 24px; border: 2px solid rgba(255,255,255,0.2); border-radius: 6px; outline: none; transition: all 0.2s; position: relative; cursor: pointer; flex-shrink: 0;
+        }
+        .service-checkbox:checked { background-color: var(--accent); border-color: var(--accent); }
+        .service-checkbox:checked::after { content: '✔'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: black; font-size: 14px; font-weight: 900; }
+    </style>
+</head>
+<body>
+
+<div id="map-screen" class="screen active">
+    <div id="map"></div>
+
+    <div id="route-banner" class="route-banner">
+        <div class="flex items-center gap-4">
+            <div class="bg-black text-[#00d9ff] w-12 h-12 flex justify-center items-center rounded-2xl text-xl font-black">➤</div>
+            <div>
+                <p class="text-[10px] font-black uppercase tracking-widest opacity-80">В пути</p>
+                <p id="route-stats" class="text-lg font-black leading-tight">Расчет...</p>
+            </div>
+        </div>
+        <button onclick="closeRoute()" class="bg-black/10 w-10 h-10 flex justify-center items-center rounded-full font-black text-xl hover:bg-black/20 transition-colors">✕</button>
+    </div>
+
+    <div class="fixed top-12 left-5 z-[50]">
+        <button onclick="toggleSidebar()" class="w-14 h-14 bg-black/80 border border-white/10 rounded-2xl flex items-center justify-center text-2xl shadow-lg active:scale-95 transition-transform">☰</button>
+    </div>
+
+    <div id="bottom-sheet" class="animate-snap">
+        <div class="drag-handle" id="handle"><div class="drag-line"></div></div>
+        
+        <div class="px-6 h-full flex flex-col pb-6">
+            <div class="mb-5 relative">
+                <input type="text" id="search" placeholder="Найти (напр. Развал, 95)..." 
+                class="w-full bg-white/5 border border-white/10 rounded-[20px] p-4 pl-12 text-sm font-bold outline-none focus:border-[#00d9ff] transition-colors shadow-inner text-white placeholder-gray-500">
+                <span class="absolute left-4 top-4 text-gray-400 text-lg">🔍</span>
+            </div>
+
+            <div class="flex gap-2 custom-scroll-x pb-3 -mx-2 px-2" id="filters">
+                <button onclick="setFilter('all', this)" class="f-btn bg-[#00d9ff] text-black px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">Все</button>
+                <button onclick="setFilter('gas', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">⛽ АЗС</button>
+                <button onclick="setFilter('service', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">🛠 СТО</button>
+                <button onclick="setFilter('wash', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">🧼 Мойка</button>
+                <button onclick="setFilter('ev', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">⚡ Зарядка</button>
+                <button onclick="setFilter('shop', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">🛒 Магазин</button>
+                <button onclick="setFilter('premium', this)" class="f-btn bg-white/10 text-white px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-colors">👑 VIP</button>
+            </div>
+
+            <div id="list-container" class="flex-1 custom-scroll space-y-3 pb-[100px] pt-2"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ========================================== -->
+<!-- НОВЫЙ ЭКРАН: ПРАЙС-ЛИСТ (Каталог)          -->
+<!-- ========================================== -->
+<div id="price-screen" class="screen flex flex-col bg-[#050505]">
+    <!-- Sticky Header -->
+    <div class="sticky top-0 z-30 bg-[#0f0f0f]/90 backdrop-blur-xl border-b border-white/10 pt-14 pb-4 px-5">
+        <div class="flex justify-between items-start mb-4">
+            <div class="flex items-center gap-4">
+                <button onclick="closePriceList()" class="w-10 h-10 bg-white/10 rounded-full flex justify-center items-center text-white font-bold active:scale-90 transition-transform">←</button>
+                <div>
+                    <h2 id="price-title" class="text-xl font-black italic text-white leading-tight">Название объекта</h2>
+                    <p id="price-subtitle" class="text-[10px] font-bold text-[#00d9ff] uppercase tracking-widest mt-1">Категория • ★ 0.0</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Поиск внутри прайса -->
+        <div class="relative mb-4">
+            <input type="text" id="price-search" onkeyup="filterPriceList()" placeholder="Найти услугу..." class="w-full bg-white/5 border border-white/10 rounded-xl p-3 pl-10 text-sm font-bold outline-none focus:border-[#00d9ff] transition-colors text-white placeholder-gray-500">
+            <span class="absolute left-3 top-3 text-gray-400">🔍</span>
+        </div>
+
+        <!-- Горизонтальные категории прайса -->
+        <div id="price-categories" class="flex gap-2 custom-scroll-x pb-2 -mx-5 px-5">
+            <!-- Генерятся динамически -->
+        </div>
+    </div>
+
+    <!-- Контент -->
+    <div class="flex-1 custom-scroll p-5 pb-[120px] relative">
+        <!-- Скелетон загрузки (Скрыт по умолчанию) -->
+        <div id="price-skeleton" class="space-y-4 hidden">
+            <div class="h-6 w-32 skeleton mb-4"></div>
+            <div class="flex gap-4 items-center bg-white/5 p-4 rounded-3xl"><div class="w-10 h-10 skeleton rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-4 skeleton w-full"></div><div class="h-3 skeleton w-2/3"></div></div></div>
+            <div class="flex gap-4 items-center bg-white/5 p-4 rounded-3xl"><div class="w-10 h-10 skeleton rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-4 skeleton w-full"></div><div class="h-3 skeleton w-2/3"></div></div></div>
+            <div class="h-6 w-40 skeleton mt-8 mb-4"></div>
+            <div class="flex gap-4 items-center bg-white/5 p-4 rounded-3xl"><div class="w-10 h-10 skeleton rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-4 skeleton w-full"></div><div class="h-3 skeleton w-2/3"></div></div></div>
+        </div>
+
+        <!-- Список услуг -->
+        <div id="price-items" class="space-y-8">
+            <!-- Генерятся динамически -->
+        </div>
+    </div>
+
+    <!-- Плавающая кнопка Корзины / Бронирования -->
+    <div class="fixed bottom-0 left-0 w-full p-5 bg-gradient-to-t from-[#050505] via-[#050505]/95 to-transparent z-40 pointer-events-none transition-transform duration-300 transform translate-y-full" id="cart-panel">
+        <button onclick="processOrder()" class="w-full bg-[#00d9ff] text-black py-4 rounded-[20px] font-black uppercase tracking-wider shadow-[0_10px_30px_rgba(0,217,255,0.2)] pointer-events-auto active:scale-95 transition-transform flex justify-between items-center px-6">
+            <span>Оформить <span id="cart-count" class="bg-black/10 px-2 py-0.5 rounded-lg text-[10px] ml-1 font-bold">0</span></span>
+            <span id="cart-total" class="font-black text-lg">0 сум</span>
+        </button>
+    </div>
+</div>
+
+<div id="garage-screen" class="screen custom-scroll pb-20">
+    <div class="p-8 pt-16">
+        <div class="flex justify-between items-center mb-10">
+            <h2 class="text-4xl font-black italic text-[#00d9ff]">Гараж</h2>
+            <button onclick="switchScreen('map-screen')" class="w-10 h-10 bg-white/10 rounded-full flex justify-center items-center text-white font-bold">✕</button>
+        </div>
+        
+        <div class="bg-gradient-to-br from-[#00d9ff] to-[#0077ff] p-6 rounded-[35px] text-black mb-8 relative overflow-hidden shadow-lg">
+            <p class="text-[10px] font-black uppercase opacity-70 tracking-widest">Текущий тариф</p>
+            <h3 class="text-3xl font-black italic uppercase mt-1">Driver FREE</h3>
+            <p class="text-xs font-bold mt-4 opacity-80">Базовый доступ к карте и ценам</p>
+            <div class="absolute -right-4 -bottom-4 text-8xl opacity-10 font-black">F</div>
+        </div>
+
+        <h4 class="text-xs font-black text-gray-500 uppercase tracking-widest mb-4">Улучшить тариф</h4>
+        <div class="space-y-4 mb-8">
+            <div class="bg-white/5 border border-white/10 p-5 rounded-[24px]">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-xl font-black text-gray-300">Silver Pass</h3>
+                    <p class="text-[#00d9ff] font-black">25 000 сум</p>
+                </div>
+                <ul class="text-[10px] font-bold text-gray-400 space-y-1 mb-4 uppercase">
+                    <li>✅ Актуальные цены на бензин (live)</li>
+                    <li>✅ Кэшбэк на АЗС партнеров</li>
+                    <li>✅ Скидки до 10% на сервисы</li>
+                </ul>
+                <button class="w-full bg-white/10 text-white py-3 rounded-xl font-black text-xs uppercase hover:bg-[#00d9ff] hover:text-black transition-colors">Выбрать Silver</button>
+            </div>
+
+            <div class="bg-white/5 border border-[#ffaa00]/50 p-5 rounded-[24px] relative overflow-hidden">
+                <div class="absolute top-0 right-0 bg-[#ffaa00] text-black text-[8px] font-black uppercase px-3 py-1 rounded-bl-lg">Топ</div>
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-xl font-black text-[#ffaa00]">Gold Status</h3>
+                    <p class="text-[#ffaa00] font-black">59 000 сум</p>
+                </div>
+                <ul class="text-[10px] font-bold text-gray-400 space-y-1 mb-4 uppercase">
+                    <li>✅ Все фишки Silver Pass</li>
+                    <li>✅ Скидки 15% и бесплатные мойки</li>
+                    <li>✅ SOS-кнопка (Эвакуатор бесплатно)</li>
+                    <li>✅ Приоритетная поддержка</li>
+                </ul>
+                <button class="w-full bg-gradient-to-r from-[#ffaa00] to-[#ffcc00] text-black py-3 rounded-xl font-black text-xs uppercase hover:scale-95 transition-transform">Купить Gold</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="profile-screen" class="screen custom-scroll pb-20">
+    <div class="p-8 pt-16">
+        <div class="flex justify-between items-center mb-8">
+            <h2 class="text-4xl font-black italic text-[#00d9ff]">Профиль</h2>
+            <button onclick="switchScreen('map-screen')" class="w-10 h-10 bg-white/10 rounded-full flex justify-center items-center text-white font-bold">✕</button>
+        </div>
+        
+        <div class="flex items-center gap-5 mb-10">
+            <div id="profile-avatar" class="w-20 h-20 bg-gradient-to-tr from-[#00d9ff] to-[#0077ff] rounded-full flex items-center justify-center text-3xl font-black text-black">U</div>
+            <div>
+                <h3 id="profile-name" class="text-2xl font-black leading-tight">Водитель</h3>
+                <p id="profile-username" class="text-xs text-[#00d9ff] font-bold mt-1 uppercase tracking-widest">@username</p>
+            </div>
+        </div>
+
+        <div class="space-y-4">
+            <div class="bg-white/5 border border-white/10 p-5 rounded-[24px]">
+                <p class="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-1">Марка авто</p>
+                <input type="text" placeholder="Например: Chevrolet Cobalt" class="w-full bg-transparent text-lg font-bold outline-none text-white border-none p-0">
+            </div>
+            <div class="bg-white/5 border border-white/10 p-5 rounded-[24px]">
+                <p class="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-1">Гос. номер</p>
+                <input type="text" placeholder="01 A 123 AA" class="w-full bg-transparent text-lg font-bold outline-none text-white uppercase border-none p-0">
+            </div>
+            <div class="bg-white/5 border border-white/10 p-5 rounded-[24px]">
+                <p class="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-1">Номер телефона</p>
+                <input type="tel" placeholder="+998 90 000 00 00" class="w-full bg-transparent text-lg font-bold outline-none text-white border-none p-0">
+            </div>
+        </div>
+
+        <button onclick="saveProfile()" class="w-full bg-[#00d9ff] text-black py-4 rounded-[20px] font-black uppercase tracking-wider mt-8 shadow-lg active:scale-95 transition-transform">Сохранить данные</button>
+    </div>
+</div>
+
+<div id="chat-screen" class="screen custom-scroll flex flex-col">
+    <div class="p-6 pt-16 border-b border-white/10 flex justify-between items-center bg-[#0f0f0f] sticky top-0 z-20">
+        <div>
+            <h2 class="text-2xl font-black italic text-[#00d9ff]">Чат поддержки</h2>
+            <p class="text-[10px] font-bold text-green-500 uppercase tracking-widest flex items-center gap-1"><span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span> На связи 24/7</p>
+        </div>
+        <button onclick="switchScreen('map-screen')" class="w-10 h-10 bg-white/10 rounded-full flex justify-center items-center text-white font-bold">✕</button>
+    </div>
+    
+    <div class="flex-1 p-6 space-y-4 custom-scroll" id="chat-msgs-full">
+        <div class="text-left text-white bg-white/10 p-4 rounded-3xl rounded-tl-sm text-sm font-bold w-[85%] leading-relaxed shadow-lg">Привет! Отправь сюда сообщение, и оно моментально прилетит администратору AutoMate.</div>
+    </div>
+
+    <div class="p-6 bg-[#0f0f0f] sticky bottom-0 border-t border-white/10">
+        <div class="flex gap-2">
+            <input type="text" id="chat-input-full" placeholder="Твой вопрос..." class="flex-1 bg-white/5 rounded-2xl p-4 text-sm font-bold border border-white/10 outline-none focus:border-[#00d9ff] transition-colors">
+            <button onclick="sendSupportMessage()" class="w-14 h-14 bg-[#00d9ff] rounded-2xl flex justify-center items-center text-black font-black text-xl shadow-lg active:scale-90 transition-transform">➤</button>
+        </div>
+    </div>
+</div>
+
+<div id="overlay" onclick="toggleSidebar()"></div>
+<div id="sidebar" class="p-8 pt-16 flex flex-col">
+    <div class="mb-10">
+        <h2 class="text-4xl font-black italic text-[#00d9ff]">Auto<span class="text-white">Mate</span></h2>
+        <p id="sidebar-user-id" class="text-[10px] font-bold text-gray-500 mt-1 uppercase tracking-widest">ID: Гость</p>
+    </div>
+    
+    <ul class="space-y-3 font-bold text-lg flex-1">
+        <li onclick="switchScreen('map-screen')" class="cursor-pointer bg-white/5 hover:bg-[#00d9ff] hover:text-black p-4 rounded-2xl transition-all flex items-center gap-4 active:scale-95"><span class="text-2xl">🗺️</span> Карта</li>
+        <li onclick="switchScreen('profile-screen')" class="cursor-pointer bg-white/5 hover:bg-[#00d9ff] hover:text-black p-4 rounded-2xl transition-all flex items-center gap-4 active:scale-95"><span class="text-2xl">👤</span> Мой Профиль</li>
+        <li onclick="switchScreen('garage-screen')" class="cursor-pointer bg-white/5 hover:bg-[#00d9ff] hover:text-black p-4 rounded-2xl transition-all flex items-center gap-4 active:scale-95"><span class="text-2xl">💳</span> Подписки / Гараж</li>
+        <li onclick="switchScreen('chat-screen')" class="cursor-pointer bg-white/5 hover:bg-[#00d9ff] hover:text-black p-4 rounded-2xl transition-all flex items-center gap-4 active:scale-95"><span class="text-2xl">💬</span> Чат Поддержки</li>
+    </ul>
+    
+    <button onclick="toggleSidebar()" class="bg-white/10 p-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-white/20 transition-colors">Скрыть меню</button>
+</div>
+
+<script>
+    // --- ❗ НАСТРОЙКИ TELEGRAM БОТА И MAPBOX ---
+    const BOT_TOKEN = '8616031797:AAFqnPtCI5huuUYaDycg5gLCfILh6PS7sT0';
+    const ADMIN_ID = '488345626';
+    mapboxgl.accessToken = 'pk.eyJ1IjoiZmZpcmVuIiwiYSI6ImNtb2dzcjNxeDB3Y3MycHM2a2ZkZG1jbjIifQ.5PEh0HktIdYOqucb94hsdA'; 
+    
+    // Telegram Mini App
+    const tg = window.Telegram ? window.Telegram.WebApp : null;
+    if(tg) { 
+        tg.expand(); 
+        tg.ready(); 
+        
+        // Автозаполнение профиля из Telegram
+        if(tg.initDataUnsafe && tg.initDataUnsafe.user) {
+            const user = tg.initDataUnsafe.user;
+            const fullName = user.first_name + (user.last_name ? ' ' + user.last_name : '');
+            document.getElementById('profile-name').innerText = fullName;
+            document.getElementById('profile-avatar').innerText = user.first_name.charAt(0).toUpperCase();
+            
+            const handle = user.username ? '@' + user.username : 'ID: ' + user.id;
+            document.getElementById('profile-username').innerText = handle;
+            document.getElementById('sidebar-user-id').innerText = handle;
+        }
+    }
+
+    // ВЕКТОРНЫЕ ИКОНКИ (Плоские SVG без кружков)
+    const SVG_ICONS = {
+        service: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.5 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.8.8 2.1.8 2.9 0l.9-.9c.8-.8.8-2.1-.1-2.8z"/></svg>`,
+        gas: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 8l-2-4H16V2H14V4H7V2H5V4H4C2.9 4 2 4.9 2 6V20C2 21.1 2.9 22 4 22H16C17.1 22 18 21.1 18 20V17H20L22 13V8H19ZM16 20H4V6H16V20ZM10 13H8V8H10V13Z"/></svg>`,
+        wash: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16c-.83 0-1.5-.67-1.5-1.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z"/><circle cx="12" cy="3" r="1.5"/><circle cx="8" cy="2" r="1"/><circle cx="16" cy="2" r="1"/></svg>`,
+        ev: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 4H14V2H12V4H8C6.9 4 6 4.9 6 6V13H8.5V15.5L5 22H8L11.5 15.5H9V6H17V16H15L18.5 22.5H21.5L18 16V6C18 4.9 17.1 4 16 4Z"/></svg>`,
+        shop: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 18c-1.1 0-1.99.9-1.99 2S5.9 22 7 22s2-.9 2-2-.9-2-2-2zM1 2v2h2l3.6 7.59-1.35 2.45c-.16.28-.25.61-.25.96 0 1.1.9 2 2 2h12v-2H7.42c-.14 0-.25-.11-.25-.25l.03-.12.9-1.63h7.45c.75 0 1.41-.41 1.75-1.03l3.58-6.49A1.003 1.003 0 0 0 20 4H5.21l-.94-2H1zm16 16c-1.1 0-1.99.9-1.99 2s.89 2 1.99 2 2-.9 2-2-.9-2-2-2z"/></svg>`,
+        premium: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L9.58 10.35 2 12l7.58 1.65L12 22l2.42-8.35L22 12l-7.58-1.65z"/></svg>`
+    };
+
+    const CAT_META = {
+        service: { icon: SVG_ICONS.service, color: '#00d9ff', label: 'Сервис' },
+        gas: { icon: SVG_ICONS.gas, color: '#ff4444', label: 'АЗС' },
+        wash: { icon: SVG_ICONS.wash, color: '#0077ff', label: 'Мойка' },
+        ev: { icon: SVG_ICONS.ev, color: '#00ff88', label: 'Электро' },
+        shop: { icon: SVG_ICONS.shop, color: '#a855f7', label: 'Магазин' },
+        premium: { icon: SVG_ICONS.premium, color: '#ffaa00', label: 'VIP' }
+    };
+
+    // ❗ ПОЛНАЯ БАЗА ДАННЫХ 
+    const FULL_DATABASE = [
+        { id: 1, name: 'Avtoritet Severniy (Сервис)', type: 'service', lat: 41.296064, lng: 69.293695, rating: 4.2, prices: 'Замена масла: 60к, Развал: 150к', tags: 'Флагманский центр' },
+        { id: 2, name: 'Avtoritet Severniy (Мойка)', type: 'wash', lat: 41.295934, lng: 69.293539, rating: 4.0, prices: 'Комплекс: 100к–130к', tags: 'Комфортная зона' },
+        { id: 3, name: 'Avtoritet Severniy (Магазин)', type: 'shop', lat: 41.295733, lng: 69.293184, rating: 4.5, prices: 'Запчасти, шины, масла', tags: 'Большой склад' },
+        { id: 4, name: 'A-Bozor Severniy (Магазин)', type: 'shop', lat: 41.291627, lng: 69.286597, rating: 4.3, prices: 'Аксессуары, химия, тюнинг', tags: 'Гипермаркет' },
+        { id: 5, name: 'A-Bozor Severniy (Сервис)', type: 'service', lat: 41.291627, lng: 69.286597, rating: 3.8, prices: 'Экспресс-замена масла: 60к', tags: 'Без очередей' },
+        { id: 6, name: 'Avtoritet Oq-Tepa (Сервис)', type: 'service', lat: 41.307288, lng: 69.206552, rating: 4.8, prices: 'Ремонт агрегатов, Электрика', tags: 'Сложные узлы' },
+        { id: 7, name: 'Avtoritet Oq-Tepa (Мойка)', type: 'wash', lat: 41.306296, lng: 69.206973, rating: 4.6, prices: 'Детейлинг-мойка: 120к', tags: 'Химия Koch, Grass' },
+        { id: 8, name: 'Avtoritet Lunacharskiy', type: 'service', lat: 41.341097, lng: 69.358939, rating: 4.1, prices: 'Срочный ремонт, тормоза', tags: 'Удобная локация' },
+        { id: 9, name: 'Avtoritet Lunacharskiy (Самооб)', type: 'wash', lat: 41.340780, lng: 69.358625, rating: 4.4, prices: 'Пена/Вода: 5к', tags: '8 боксов, 24/7' },
+        { id: 10, name: 'A-Bozor Comfort', type: 'premium', lat: 41.304208, lng: 69.318933, rating: 4.6, prices: 'Диски, обвесы, аудио', tags: 'Центр эстетики' },
+        { id: 11, name: 'Abozor Parkent', type: 'service', lat: 41.304347, lng: 69.319563, rating: 3.5, prices: 'Развал 3D: 150к', tags: 'Современные стенды' },
+        { id: 12, name: 'Abozor Yunusobod (Магазин)', type: 'shop', lat: 41.373308, lng: 69.309917, rating: 4.3, prices: 'АКБ, колодки, масла', tags: 'Специализация GM' },
+        { id: 13, name: 'Abozor Yunusobod (Сервис)', type: 'service', lat: 41.373308, lng: 69.309917, rating: 3.7, prices: 'Чистка форсунок: 300к', tags: 'Мастера Gentra/Cobalt' },
+        { id: 14, name: 'Abozor Turkiston EV', type: 'ev', lat: 41.295701, lng: 69.293067, rating: 4.7, prices: 'Диагностика BYD, прошивка', tags: 'Электромобили' },
+        { id: 15, name: 'Avtoritet Kushbegi', type: 'wash', lat: 41.279640, lng: 69.273752, rating: 4.2, prices: 'Воск: 250к, Детейлинг', tags: 'Предпродажная' },
+        { id: 16, name: 'Avtoritet Besharik', type: 'service', lat: 41.283886, lng: 69.340785, rating: 4.4, prices: 'ТНВД, форсунки', tags: 'Спец-сервис впрыска' },
+        { id: 20, name: 'Mustang Gavhar (АЗС)', type: 'gas', lat: 41.253894, lng: 69.204382, rating: 4.1, prices: '92: 11500; 95: 14500', tags: 'Магазин, QR' },
+        { id: 21, name: 'Mustang Gavhar (СТО)', type: 'service', lat: 41.253996, lng: 69.204578, rating: 3.9, prices: 'Масло: 60к, колодки: 100к', tags: 'Бокс на заправке' },
+        { id: 22, name: 'Mustang Ashrafi (АЗС)', type: 'gas', lat: 41.278813, lng: 69.323885, rating: 4.3, prices: '92: 11500; 95: 14500', tags: 'Флагман, кафе' },
+        { id: 23, name: 'Mustang Ashrafi (СТО)', type: 'service', lat: 41.278813, lng: 69.323885, rating: 4.0, prices: 'ТО, замена жидкостей', tags: 'Новое оборудование' },
+        { id: 24, name: 'Mustang Sergeli (АЗС)', type: 'gas', lat: 41.243279, lng: 69.230492, rating: 4.2, prices: '92: 11500; 95: 14500', tags: 'Путь на авторынок' },
+        { id: 25, name: 'Mustang Sergeli (СТО)', type: 'service', lat: 41.243279, lng: 69.230492, rating: 3.7, prices: 'Масла, фильтры, колодки', tags: 'Удобно заехать' },
+        { id: 26, name: 'Mustang Karasu', type: 'gas', lat: 41.310644, lng: 69.344450, rating: 4.4, prices: '100: 21к; 95: 14500', tags: 'Премиум-топливо' },
+        { id: 27, name: 'Mustang Kushbegi', type: 'gas', lat: 41.268920, lng: 69.289206, rating: 4.2, prices: '92: 11500; 95: 14500', tags: 'Компактная точка' },
+        { id: 30, name: 'iWash Mirzoulugbek', type: 'wash', lat: 41.352299, lng: 69.354482, rating: 4.4, prices: 'Пена/Вода: 5к за цикл', tags: '10 боксов, Осмос' },
+        { id: 31, name: 'iWash Uchtepa', type: 'wash', lat: 41.291959, lng: 69.169075, rating: 4.6, prices: 'Активная пена: 5к', tags: 'Зона протирки' },
+        { id: 32, name: 'iWash Yunusobod', type: 'wash', lat: 41.322746, lng: 69.278713, rating: 4.3, prices: 'Пена/Вода: 5к; Чернение', tags: 'Для кроссоверов' },
+        { id: 33, name: 'iWash Yangihayot', type: 'wash', lat: 41.217855, lng: 69.225644, rating: 4.7, prices: 'Цикл: 5к', tags: 'Новое оборудование' },
+        { id: 40, name: 'Ibr Petroleum Station', type: 'gas', lat: 41.362486, lng: 69.289438, rating: 3.8, prices: '92: 10800; 95: 13800', tags: 'Центральная' },
+        { id: 41, name: 'UNG Petro Аэропорт', type: 'gas', lat: 41.257848, lng: 69.255798, rating: 3.5, prices: '92: 10800; 95: 13800', tags: 'Перед вылетом' },
+        { id: 42, name: 'Carvon Паркентский', type: 'gas', lat: 41.314077, lng: 69.328143, rating: 3.4, prices: '92: 10800; 95: 13800', tags: 'Популярная точка' },
+        { id: 43, name: 'Carvon Яккасарай', type: 'gas', lat: 41.264703, lng: 69.219031, rating: 3.6, prices: '92: 10800; 95: 13800', tags: 'Огромная площадка' },
+        { id: 44, name: 'Carvon А.Дониш', type: 'gas', lat: 41.358599, lng: 69.273569, rating: 3.7, prices: '92: 10800; 95: 13800', tags: 'Часто есть 98-й' },
+        { id: 45, name: 'Carvon Тахтапуль', type: 'gas', lat: 41.341667, lng: 69.261671, rating: 3.2, prices: '92: 10800; 95: 13800', tags: 'Самый центр' },
+        { id: 46, name: 'UNG Petro Куйлюк', type: 'gas', lat: 41.237844, lng: 69.320439, rating: 3.1, prices: '92: 10800; 95: 13800', tags: 'Магазин запчастей рядом' },
+        { id: 47, name: 'Fath Oil Карасу', type: 'gas', lat: 41.320111, lng: 69.361467, rating: 3.9, prices: '92: 10800; 95: 13800', tags: 'Обновленные колонки' },
+        { id: 48, name: 'АЗС Intran servis', type: 'gas', lat: 41.361867, lng: 69.284958, rating: 3.6, prices: '92: 10800; 95: 13800', tags: 'Удобный заезд' },
+        { id: 49, name: 'Yks', type: 'gas', lat: 41.283755, lng: 69.235608, rating: 3.3, prices: '92: 10800; 95: 13800', tags: 'Чиланзар' },
+        { id: 50, name: 'Energy oil group', type: 'gas', lat: 41.288334, lng: 69.285047, rating: 3.7, prices: '92: 10800; 95: 13800', tags: 'Оплата картой' },
+        { id: 51, name: 'UNG Petro Актепа', type: 'gas', lat: 41.347882, lng: 69.238301, rating: 3.2, prices: '92: 10800; 95: 13800', tags: 'Популярный район' },
+        { id: 52, name: 'Carvon Рохат', type: 'gas', lat: 41.262066, lng: 69.363787, rating: 3.1, prices: '92: 10800; 95: 13800', tags: 'Выезд в Ангрен' },
+        { id: 53, name: 'Ipak yo`li Petrol', type: 'gas', lat: 41.260062, lng: 69.174012, rating: 3.6, prices: '92: 10800; 95: 13800', tags: 'Домбрабад' },
+        { id: 54, name: 'Carvon Саларская', type: 'gas', lat: 41.329240, lng: 69.313016, rating: 4.6, prices: '92: 10800; 95: 13800', tags: 'Конечная станция' },
+        { id: 55, name: 'Green Dizel', type: 'gas', lat: 41.382822, lng: 69.290971, rating: 4.4, prices: '92: 10800; 95: 13800', tags: 'Вежливые заправщики' },
+        { id: 56, name: 'АЗС Intran Фархадская', type: 'gas', lat: 41.289793, lng: 69.180194, rating: 4.0, prices: '92: 10800; 95: 13800', tags: 'Фархадский рынок' },
+        { id: 60, name: 'Lukoil Axangaran', type: 'gas', lat: 41.273580, lng: 69.363001, rating: 4.5, prices: '95: 16500; 100: 21000', tags: 'Премиум-маркет' },
+        { id: 61, name: 'Lukoil Yunusobod', type: 'gas', lat: 41.384675, lng: 69.303267, rating: 4.3, prices: '95: 16500; 100: 21000', tags: 'Кофе-зона' },
+        { id: 62, name: 'Lukoil Tashkent City', type: 'gas', lat: 41.329673, lng: 69.225205, rating: 4.6, prices: '95: 16800; 100: 21500', tags: 'Терминалы самообсл.' },
+        { id: 63, name: 'Lukoil Korasu', type: 'gas', lat: 41.310679, lng: 69.347102, rating: 4.2, prices: '95: 16500; 100: 21000', tags: 'AdBlue в наличии' },
+        { id: 70, name: 'TOK BOR Seoul Moon', type: 'ev', lat: 41.301220, lng: 69.247691, rating: 4.8, prices: 'DC: 2500/кВт; AC: 1800', tags: 'Во время шоппинга' },
+        { id: 71, name: 'TOK BOR Riviera', type: 'ev', lat: 41.339511, lng: 69.254376, rating: 4.7, prices: 'GB/T Fast: 2500/кВт', tags: 'Скоростная 120 кВт' },
+        { id: 72, name: 'TOK BOR Compass', type: 'ev', lat: 41.238556, lng: 69.327738, rating: 4.5, prices: 'Fast DC: 2500/кВт', tags: 'Выезд на Куйлюк' },
+        { id: 73, name: 'TOK BOR Sam. Darvoza', type: 'ev', lat: 41.316409, lng: 69.230996, rating: 4.6, prices: 'DC 60 кВт; AC 22 кВт', tags: 'Подземный паркинг' },
+        { id: 74, name: 'TOK BOR Central Park', type: 'ev', lat: 41.307269, lng: 69.295662, rating: 4.9, prices: 'GB/T DC: 2500/кВт', tags: 'Центр, Кофе рядом' },
+        { id: 75, name: 'TOK BOR Minor', type: 'ev', lat: 41.330927, lng: 69.271370, rating: 4.4, prices: 'AC 7 кВт; DC 30 кВт', tags: 'Рядом бизнес-центры' },
+        { id: 76, name: 'TOK BOR Chilanzar', type: 'ev', lat: 41.282624, lng: 69.222497, rating: 4.7, prices: 'Fast DC: 2500/кВт', tags: '4 поста зарядки' },
+        { id: 80, name: 'Moyka-DS Chilanzar', type: 'wash', lat: 41.272602, lng: 69.180598, rating: 4.6, prices: 'Пена/Вода: 5к', tags: 'Просторная зона сушки' },
+        { id: 81, name: 'Moyka-DS Sergeli', type: 'wash', lat: 41.244045, lng: 69.286360, rating: 4.5, prices: 'Цикл: 5к; Воск', tags: '12 боксов' },
+        { id: 82, name: 'Moyka-DS TKAD', type: 'wash', lat: 41.244052, lng: 69.286356, rating: 4.3, prices: 'Полный спектр: 5к', tags: 'Стратегическая точка' },
+        { id: 83, name: 'Moyka-DS Karakamish', type: 'wash', lat: 41.357443, lng: 69.220868, rating: 4.4, prices: 'Пена: 5к; Пылесос: 5к', tags: 'Удобный заезд' },
+        { id: 84, name: 'Moyka-DS Kuyluk', type: 'wash', lat: 41.240287, lng: 69.318196, rating: 4.2, prices: 'Робот-мойка: от 40к', tags: 'Уникальный бокс' },
+        { id: 90, name: 'Byd Shop', type: 'shop', lat: 41.262859, lng: 69.233898, rating: 4.7, prices: 'Товары для BYD', tags: 'Магазин автозапчастей' },
+        { id: 91, name: 'Автозапчасти Богишамол', type: 'shop', lat: 41.370734, lng: 69.286998, rating: 4.5, prices: 'Запчасти Chevrolet, BYD', tags: 'Удобная парковка' },
+        { id: 92, name: 'Timur shop', type: 'shop', lat: 41.287027, lng: 69.205184, rating: 4.4, prices: 'Материалы для шумоизоляции', tags: 'Детейлинг' },
+        { id: 93, name: 'Auto-Prestige', type: 'shop', lat: 41.322869, lng: 69.264574, rating: 4.8, prices: 'Тюнинг, премиум свет', tags: 'Лучший свет и звук' },
+        { id: 94, name: 'Moyka Market', type: 'shop', lat: 41.341253, lng: 69.266441, rating: 4.8, prices: 'Автохимия, воски', tags: 'Для самостоятельного ухода' },
+        { id: 100, name: 'Brookland Mirabad', type: 'premium', lat: 41.292851, lng: 69.273294, rating: 4.6, prices: 'Комплекс: от 100к', tags: 'Отличный кофе' },
+        { id: 101, name: 'Brookland Labzak', type: 'premium', lat: 41.328140, lng: 69.265348, rating: 4.7, prices: 'Трехфазная мойка', tags: 'Работают до глубокой ночи' },
+        { id: 102, name: 'Black Star Mirabad', type: 'premium', lat: 41.290755, lng: 69.272713, rating: 4.8, prices: 'Двухфазная: 100к', tags: 'Индивидуальные боксы' },
+        { id: 103, name: 'Black Star Central', type: 'premium', lat: 41.310279, lng: 69.276866, rating: 4.5, prices: 'Мойка двигателя: 200к', tags: 'Бренд-стандарты' },
+        { id: 104, name: 'Urus Premium Wash', type: 'premium', lat: 41.325502, lng: 69.290480, rating: 4.2, prices: 'Защита кузова, пленки', tags: 'Спец. на дорогих иномарках' },
+        { id: 105, name: 'Drive Premium', type: 'premium', lat: 41.356380, lng: 69.310773, rating: 4.4, prices: 'Керамика, полировка', tags: 'ТЦ High Town Plaza' },
+        { id: 106, name: 'Supreme Carwash', type: 'premium', lat: 41.307412, lng: 69.270655, rating: 4.3, prices: 'Тщательная мойка днища', tags: 'Детейлинг' }
+    ];
+
+    // ==========================================
+    // DATA FACTORY: ГЕНЕРАТОР ПРАЙС-ЛИСТОВ (ЦЕНЫ В СУМАХ)
+    // ==========================================
+    const DATA_DICTIONARY = {
+        wash: {
+            categories: ['Кузов', 'Салон', 'Детейлинг', 'Допы'],
+            items: [
+                { cat: 'Кузов', name: 'Бесконтактная мойка (Экспресс)', desc: 'Сбив грязи, активная пена, сушка', price: 40000, time: '15 мин', pop: true },
+                { cat: 'Кузов', name: 'Двухфазная мойка', desc: 'Европейская технология без царапин', price: 80000, time: '30 мин' },
+                { cat: 'Салон', name: 'Уборка салона + Пылесос', desc: 'Чистка пластика, стекол, ковриков', price: 50000, time: '20 мин', pop: true },
+                { cat: 'Детейлинг', name: 'Полная химчистка салона', desc: 'С разбором сидений, удаление пятен', price: 800000, oldPrice: 1000000, time: '24 часа' },
+                { cat: 'Детейлинг', name: 'Нанесение твердого воска', desc: 'Защита от реагентов и гидрофоб', price: 250000, time: '40 мин' },
+                { cat: 'Допы', name: 'Чернение резины', desc: 'Премиум состав Grass', price: 15000, time: '5 мин' },
+                { cat: 'Допы', name: 'Очистка дисков от колодок', desc: 'Кислотная чистка Iron', price: 60000, time: '15 мин' }
+            ]
+        },
+        service: {
+            categories: ['ТО', 'Ходовая', 'Двигатель', 'Диагностика'],
+            items: [
+                { cat: 'ТО', name: 'Замена масла ДВС', desc: 'Работа (без стоимости масла)', price: 60000, time: '30 мин', pop: true },
+                { cat: 'ТО', name: 'Замена колодок (ось)', desc: 'Снятие, установка, смазка суппортов', price: 120000, time: '45 мин', pop: true },
+                { cat: 'Ходовая', name: 'Развал-схождение 3D', desc: 'Настройка геометрии колес Hunter', price: 150000, time: '40 мин' },
+                { cat: 'Ходовая', name: 'Диагностика ходовой', desc: 'Полный осмотр на подъемнике', price: 50000, oldPrice: 80000, time: '20 мин' },
+                { cat: 'Двигатель', name: 'Чистка форсунок (ультразвук)', desc: 'Снятие рампы и чистка на стенде', price: 350000, time: '2 часа' },
+                { cat: 'Диагностика', name: 'Компьютерная диагностика', desc: 'Чтение ошибок OBD2 / Сброс чека', price: 80000, time: '15 мин' }
+            ]
+        },
+        gas: {
+            categories: ['Топливо', 'Маркет', 'Кафе'],
+            items: [
+                { cat: 'Топливо', name: 'Бензин АИ-95 (Импорт)', desc: 'Высокооктановое топливо Euro-5', price: 14500, time: 'Литр', pop: true },
+                { cat: 'Топливо', name: 'Бензин АИ-92', desc: 'Стандарт', price: 11500, time: 'Литр' },
+                { cat: 'Топливо', name: 'Бензин АИ-100', desc: 'Спортивное топливо', price: 21000, time: 'Литр' },
+                { cat: 'Маркет', name: 'Незамерзайка -20°C (5л)', desc: 'Жидкость стеклоомывателя', price: 35000, time: 'шт' },
+                { cat: 'Кафе', name: 'Хот-дог Датский + Кофе', desc: 'Комбо набор в дорогу', price: 45000, oldPrice: 55000, time: 'шт', pop: true }
+            ]
+        },
+        ev: {
+            categories: ['Зарядка', 'Кафе', 'Сервис'],
+            items: [
+                { cat: 'Зарядка', name: 'Быстрая зарядка DC (120 кВт)', desc: 'Разъем GB/T, CCS2', price: 2500, time: 'кВт', pop: true },
+                { cat: 'Зарядка', name: 'Медленная зарядка AC (22 кВт)', desc: 'Ночная парковка', price: 1500, time: 'кВт' },
+                { cat: 'Кафе', name: 'Американо 0.3', desc: 'Пока заряжается авто', price: 20000, time: 'шт' },
+                { cat: 'Сервис', name: 'Обновление прошивки BYD', desc: 'Установка английского/русского языка', price: 800000, time: '2 часа' }
+            ]
+        },
+        shop: {
+            categories: ['Масла', 'Расходники', 'Химия', 'Аксессуары'],
+            items: [
+                { cat: 'Масла', name: 'Motul 8100 X-cess 5W-40 (4л)', desc: 'Синтетическое моторное масло', price: 650000, time: 'шт', pop: true },
+                { cat: 'Масла', name: 'Castrol Magnatec 10W-40 (4л)', desc: 'Полусинтетика', price: 420000, time: 'шт' },
+                { cat: 'Расходники', name: 'Фильтр салона угольный', desc: 'Для Cobalt/Gentra', price: 45000, time: 'шт' },
+                { cat: 'Химия', name: 'Очиститель карбюратора Mannol', desc: 'Спрей 400мл', price: 35000, time: 'шт' },
+                { cat: 'Аксессуары', name: 'Ароматизатор Areon', desc: 'Запах: Black Crystal', price: 25000, time: 'шт', pop: true }
+            ]
+        },
+        premium: {
+            categories: ['Детейлинг', 'Оклейка', 'Аудио'],
+            items: [
+                { cat: 'Детейлинг', name: 'Керамическое покрытие 9H', desc: '3 слоя Krytex, полировка включена', price: 4500000, time: '2 дня', pop: true },
+                { cat: 'Оклейка', name: 'Антигравийная пленка (Морда)', desc: 'Полиуретан SunTek (США)', price: 8000000, oldPrice: 9500000, time: '1 день' },
+                { cat: 'Аудио', name: 'Шумоизоляция (Премиум полная)', desc: 'Материалы ComfortMat', price: 12000000, time: '3 дня' }
+            ]
+        }
+    };
+
+    // Привязываем прайс-листы к БД при загрузке
+    FULL_DATABASE.forEach(loc => {
+        const dict = DATA_DICTIONARY[loc.type] || DATA_DICTIONARY['service'];
+        const generatedItems = dict.items.map((item, index) => ({ ...item, id: `${loc.id}_${index}` }));
+        loc.priceListData = { categories: ['Все', ...dict.categories], items: generatedItems };
+    });
+
+
+    let map; let userPos = [69.2797, 41.3111]; let currentFilter = 'all';
+
+    // --- ИНИЦИАЛИЗАЦИЯ КАРТЫ ---
+    map = new mapboxgl.Map({ container: 'map', style: 'mapbox://styles/mapbox/navigation-night-v1', center: userPos, zoom: 12.5, pitch: 45 });
+    const geolocate = new mapboxgl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: true, showUserHeading: true });
+    map.addControl(geolocate);
+
+    map.on('load', () => {
+        renderPoints(); renderList();
+        setTimeout(() => { geolocate.trigger(); }, 1000);
+        geolocate.on('geolocate', (e) => { userPos = [e.coords.longitude, e.coords.latitude]; });
+    });
+
+    // --- ОТРИСОВКА ВЕКТОРНЫХ МАРКЕРОВ ---
+    function renderPoints() {
+        FULL_DATABASE.forEach(loc => {
+            const meta = CAT_META[loc.type];
+            const el = document.createElement('div'); 
+            el.className = 'custom-marker'; 
+            el.style.color = meta.color; 
+            el.innerHTML = meta.icon;
+
+            // Кнопка "Прайс-лист" добавлена в Pop-up
+            const popup = new mapboxgl.Popup({ offset: 20 }).setHTML(`
+                <div class="text-white w-64">
+                    <span class="text-[10px] font-black uppercase bg-white/10 px-2 py-1 rounded mb-2 inline-block" style="color:${meta.color}">${meta.label}</span>
+                    <b class="text-xl italic leading-tight block mb-1">${loc.name}</b>
+                    <p class="text-xs text-gray-400 font-bold mb-3">${loc.tags}</p>
+                    
+                    <div class="flex gap-2 mt-4">
+                        <button onclick="buildRoute(${loc.lng}, ${loc.lat})" class="flex-1 bg-white/10 text-white py-3 rounded-xl font-black text-[10px] uppercase tracking-wider active:scale-95 transition-transform">Маршрут</button>
+                        <button onclick="openPriceList(${loc.id})" class="flex-1 bg-[#00d9ff] text-black py-3 rounded-xl font-black text-[10px] uppercase tracking-wider active:scale-95 shadow-[0_5px_15px_rgba(0,217,255,0.2)] transition-transform">Прайс-лист</button>
+                    </div>
+                </div>
+            `);
+
+            new mapboxgl.Marker(el).setLngLat([loc.lng, loc.lat]).setPopup(popup).addTo(map);
+            el.addEventListener('click', () => { snapSheet('collapsed'); if(tg) tg.HapticFeedback.selectionChanged(); });
+        });
+    }
+
+    // --- РЕНДЕР СПИСКА (При нажатии открывается прайс) ---
+    function renderList(query = '') {
+        const container = document.getElementById('list-container');
+        const filtered = FULL_DATABASE.filter(item => {
+            const matchSearch = item.name.toLowerCase().includes(query.toLowerCase()) || item.tags.toLowerCase().includes(query.toLowerCase());
+            const matchFilter = currentFilter === 'all' || item.type === currentFilter;
+            return matchSearch && matchFilter;
+        });
+
+        container.innerHTML = filtered.map(loc => {
+            const meta = CAT_META[loc.type];
+            return `
+            <div onclick="openPriceList(${loc.id})" class="bg-white/5 border border-white/5 p-4 rounded-3xl flex justify-between items-center active:scale-[0.98] transition-all cursor-pointer mb-2 relative overflow-hidden group hover:border-[#00d9ff]/30">
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 flex justify-center items-center rounded-2xl" style="background-color: ${meta.color}20; color: ${meta.color}">
+                        <div style="width:24px; height:24px;">${meta.icon}</div>
+                    </div>
+                    <div>
+                        <h3 class="font-black text-[15px] leading-tight mb-1 text-white">${loc.name}</h3>
+                        <p class="text-[10px] text-gray-400 uppercase font-bold tracking-wider">${meta.label} • ★ ${loc.rating}</p>
+                    </div>
+                </div>
+                <div class="text-[#00d9ff] font-black bg-[#00d9ff]/10 w-10 h-10 rounded-xl flex items-center justify-center">➔</div>
+            </div>
+        `}).join('');
+    }
+
+    // ==========================================
+    // ЛОГИКА ПРАЙС-ЛИСТА И КОРЗИНЫ
+    // ==========================================
+    let currentPlaceId = null;
+    let activeCategory = 'Все';
+    let shoppingCart = {}; // { "item_id": { data, quantity } }
+
+    // ФОРМАТИРОВАНИЕ ДЕНЕГ: УЗБЕКСКИЕ СУМЫ (UZS)
+    function formatMoney(sum) { 
+        return sum.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " сум"; 
+    }
+
+    function openPriceList(placeId) {
+        if(tg) tg.HapticFeedback.impactOccurred('medium');
+        currentPlaceId = placeId;
+        activeCategory = 'Все';
+        shoppingCart = {}; // Очищаем корзину для нового объекта
+        updateCartUI();
+        document.getElementById('price-search').value = '';
+
+        const loc = FULL_DATABASE.find(l => l.id === placeId);
+        const meta = CAT_META[loc.type];
+
+        document.getElementById('price-title').innerText = loc.name;
+        document.getElementById('price-subtitle').innerText = `${meta.label} • ★ ${loc.rating}`;
+        document.getElementById('price-subtitle').style.color = meta.color;
+
+        switchScreen('price-screen');
+        const listContainer = document.getElementById('price-items');
+        const skeleton = document.getElementById('price-skeleton');
+        
+        listContainer.innerHTML = '';
+        skeleton.classList.remove('hidden');
+
+        // Имитация загрузки
+        setTimeout(() => {
+            skeleton.classList.add('hidden');
+            renderPriceCategories();
+            renderPriceList();
+        }, 400);
+    }
+
+    function closePriceList() {
+        switchScreen('map-screen');
+        if(tg) tg.HapticFeedback.impactOccurred('light');
+    }
+
+    function renderPriceCategories() {
+        const loc = FULL_DATABASE.find(l => l.id === currentPlaceId);
+        const container = document.getElementById('price-categories');
+        container.innerHTML = loc.priceListData.categories.map(cat => `
+            <button onclick="setPriceCategory('${cat}')" class="px-5 py-2.5 rounded-2xl text-[11px] font-black uppercase tracking-wider shrink-0 transition-all ${activeCategory === cat ? 'bg-[#00d9ff] text-black shadow-[0_5px_15px_rgba(0,217,255,0.3)]' : 'bg-white/5 text-gray-400 hover:bg-white/10'}">${cat}</button>
+        `).join('');
+    }
+
+    function setPriceCategory(cat) {
+        activeCategory = cat;
+        if(tg) tg.HapticFeedback.selectionChanged();
+        renderPriceCategories();
+        renderPriceList();
+    }
+
+    function filterPriceList() { renderPriceList(document.getElementById('price-search').value); }
+
+    function renderPriceList(query = '') {
+        const loc = FULL_DATABASE.find(l => l.id === currentPlaceId);
+        const container = document.getElementById('price-items');
+        
+        let displayHtml = '';
+        const catsToRender = activeCategory === 'Все' ? loc.priceListData.categories.filter(c => c !== 'Все') : [activeCategory];
+
+        catsToRender.forEach(cat => {
+            const items = loc.priceListData.items.filter(i => {
+                const matchCat = i.cat === cat;
+                const matchQuery = i.name.toLowerCase().includes(query.toLowerCase()) || i.desc.toLowerCase().includes(query.toLowerCase());
+                return matchCat && matchQuery;
+            });
+
+            if(items.length > 0) {
+                displayHtml += `
+                    <div class="mb-8">
+                        <h3 class="text-xl font-black italic text-white mb-4 flex items-center gap-2">${cat} <div class="h-[1px] flex-1 bg-white/10 ml-2 mt-1"></div></h3>
+                        <div class="space-y-3">
+                            ${items.map(item => {
+                                const inCart = !!shoppingCart[item.id];
+                                return `
+                                <div onclick="toggleCartItem('${item.id}')" class="bg-white/5 border ${inCart ? 'border-[#00d9ff]' : 'border-white/5'} p-4 rounded-[24px] transition-all cursor-pointer relative overflow-hidden group">
+                                    ${item.pop ? '<div class="absolute top-0 right-0 bg-red-500 text-white text-[8px] font-black uppercase px-3 py-1 rounded-bl-lg">Хит</div>' : ''}
+                                    <div class="flex gap-4 items-center">
+                                        <input type="checkbox" class="service-checkbox" ${inCart ? 'checked' : ''} onclick="event.stopPropagation(); toggleCartItem('${item.id}')">
+                                        <div class="flex-1">
+                                            <h4 class="font-bold text-sm text-white leading-tight mb-1 pr-8">${item.name}</h4>
+                                            <p class="text-[11px] text-gray-500 leading-tight mb-2">${item.desc}</p>
+                                            <div class="flex items-center gap-3">
+                                                <span class="text-sm font-black text-[#00d9ff]">${formatMoney(item.price)}</span>
+                                                ${item.oldPrice ? `<span class="text-[10px] text-gray-500 line-through font-bold">${formatMoney(item.oldPrice)}</span>` : ''}
+                                                <span class="text-[10px] bg-white/10 text-gray-300 px-2 py-0.5 rounded ml-auto">⏱ ${item.time}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+        });
+
+        if(displayHtml === '') displayHtml = '<div class="text-center text-gray-500 py-10 font-bold text-sm">Услуг не найдено</div>';
+        container.innerHTML = displayHtml;
+    }
+
+    function toggleCartItem(itemId) {
+        const loc = FULL_DATABASE.find(l => l.id === currentPlaceId);
+        const itemData = loc.priceListData.items.find(i => i.id === itemId);
+        
+        if (shoppingCart[itemId]) { delete shoppingCart[itemId]; } 
+        else { shoppingCart[itemId] = itemData; }
+        
+        if(tg) tg.HapticFeedback.selectionChanged();
+        renderPriceList(document.getElementById('price-search').value);
+        updateCartUI();
+    }
+
+    function updateCartUI() {
+        const cartKeys = Object.keys(shoppingCart);
+        const count = cartKeys.length;
+        const total = cartKeys.reduce((sum, key) => sum + shoppingCart[key].price, 0);
+        
+        const panel = document.getElementById('cart-panel');
+        document.getElementById('cart-count').innerText = count;
+        document.getElementById('cart-total').innerText = formatMoney(total);
+
+        if (count > 0) { panel.classList.remove('translate-y-full'); } 
+        else { panel.classList.add('translate-y-full'); }
+    }
+
+    function processOrder() {
+        if(tg) tg.HapticFeedback.notificationOccurred('success');
+        const total = document.getElementById('cart-total').innerText;
+        alert(`Заказ на сумму ${total} успешно сформирован! В реальном приложении здесь откроется окно подтверждения времени.`);
+        closePriceList();
+    }
+
+    function focusOn(lng, lat) { map.flyTo({ center: [lng, lat], zoom: 15.5, pitch: 60, duration: 1500 }); snapSheet('collapsed'); if(tg) tg.HapticFeedback.impactOccurred('light'); }
+
+    // --- ПОИСК И ФИЛЬТРЫ ---
+    let searchTimer;
+    document.getElementById('search').addEventListener('input', (e) => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { renderList(e.target.value); }, 300); });
+    document.getElementById('search').addEventListener('focus', () => { snapSheet('full'); });
+
+    function setFilter(f, btn) {
+        currentFilter = f;
+        document.querySelectorAll('.f-btn').forEach(b => { b.classList.remove('bg-[#00d9ff]', 'text-black'); b.classList.add('bg-white/10', 'text-white'); });
+        btn.classList.remove('bg-white/10', 'text-white'); btn.classList.add('bg-[#00d9ff]', 'text-black');
+        renderList(document.getElementById('search').value);
+        if(tg) tg.HapticFeedback.selectionChanged();
+    }
+
+    // --- 60FPS ФИЗИКА BOTTOM SHEET ---
+    const sheet = document.getElementById('bottom-sheet');
+    const handle = document.getElementById('handle'); 
+    const H = window.innerHeight;
+    const STATE = { full: 0, half: H * 0.45, collapsed: H - 140 };
+    let currentY = STATE.half; let startY = 0;
+    let animFrame;
+    
+    sheet.style.transform = `translateY(${currentY}px)`;
+
+    function snapSheet(stateName) { 
+        currentY = STATE[stateName]; 
+        sheet.classList.add('animate-snap'); 
+        sheet.style.transform = `translateY(${currentY}px)`; 
+    }
+    
+    handle.addEventListener('touchstart', (e) => { 
+        sheet.classList.remove('animate-snap'); 
+        startY = e.touches[0].clientY - currentY; 
+    }, {passive: true});
+    
+    handle.addEventListener('touchmove', (e) => { 
+        let y = e.touches[0].clientY - startY; 
+        if (y < 0) y = 0; 
+        currentY = y; 
+        if(!animFrame) {
+            animFrame = requestAnimationFrame(() => {
+                sheet.style.transform = `translateY(${currentY}px)`;
+                animFrame = null;
+            });
+        }
+    }, {passive: true});
+    
+    handle.addEventListener('touchend', () => { 
+        if (currentY < STATE.half / 2) snapSheet('full'); 
+        else if (currentY > STATE.half + ((STATE.collapsed - STATE.half) / 2)) snapSheet('collapsed'); 
+        else snapSheet('half'); 
+    });
+    
+    map.on('click', () => { snapSheet('collapsed'); });
+
+    // --- МАРШРУТИЗАЦИЯ ---
+    function buildRoute(destLng, destLat) {
+        if(tg) tg.HapticFeedback.impactOccurred('heavy');
+        fetch(`https://api.mapbox.com/directions/v5/mapbox/driving/${userPos[0]},${userPos[1]};${destLng},${destLat}?geometries=geojson&access_token=${mapboxgl.accessToken}`)
+        .then(r => r.json()).then(data => {
+            if (!data.routes) return;
+            const route = data.routes[0].geometry.coordinates;
+            const geojson = { type: 'Feature', geometry: { type: 'LineString', coordinates: route } };
+            if (map.getSource('route')) { map.getSource('route').setData(geojson); } else {
+                map.addLayer({ id: 'route', type: 'line', source: { type: 'geojson', data: geojson }, paint: { 'line-color': '#00d9ff', 'line-width': 6, 'line-opacity': 1 } });
+            }
+            document.getElementById('route-banner').style.display = 'flex';
+            document.getElementById('route-stats').innerText = `${(data.routes[0].distance / 1000).toFixed(1)} км • ${Math.round(data.routes[0].duration / 60)} мин`;
+            snapSheet('collapsed');
+            const bounds = new mapboxgl.LngLatBounds(route[0], route[0]); route.forEach(c => bounds.extend(c));
+            map.fitBounds(bounds, { padding: {top: 150, bottom: 150, left: 50, right: 50}, duration: 1500, pitch: 30 });
+            document.querySelectorAll('.mapboxgl-popup').forEach(p => p.remove());
+        });
+    }
+    function closeRoute() { document.getElementById('route-banner').style.display = 'none'; if (map.getLayer('route')) { map.removeLayer('route'); } if (map.getSource('route')) map.removeSource('route'); if(tg) tg.HapticFeedback.impactOccurred('light'); }
+
+    // --- SPA НАВИГАЦИЯ ---
+    function toggleSidebar() {
+        const sb = document.getElementById('sidebar'); const ov = document.getElementById('overlay');
+        sb.classList.toggle('open'); ov.style.display = sb.classList.contains('open') ? 'block' : 'none';
+        if(tg) tg.HapticFeedback.selectionChanged();
+    }
+
+    function switchScreen(screenId) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(screenId).classList.add('active');
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('overlay').style.display = 'none';
+        if(tg) tg.HapticFeedback.impactOccurred('medium');
+    }
+
+    function saveProfile() {
+        if(tg) tg.HapticFeedback.notificationOccurred('success');
+        alert('Ваши данные успешно сохранены в профиле!');
+        switchScreen('map-screen');
+    }
+
+    // --- ОТПРАВКА СООБЩЕНИЯ В ТГ БОТ ---
+    function sendSupportMessage() {
+        const input = document.getElementById('chat-input-full');
+        const msgs = document.getElementById('chat-msgs-full');
+        const text = input.value.trim();
+        if(text === '') return;
+        
+        msgs.innerHTML += `<div class="text-right text-black font-black text-sm bg-[#00d9ff] p-4 rounded-3xl rounded-tr-sm ml-10 shadow-lg">${text}</div>`;
+        input.value = ''; msgs.scrollTop = msgs.scrollHeight;
+        if(tg) tg.HapticFeedback.impactOccurred('light');
+        
+        let senderName = "Пользователь";
+        if(tg && tg.initDataUnsafe && tg.initDataUnsafe.user) {
+            const u = tg.initDataUnsafe.user;
+            senderName = `${u.first_name} ${u.last_name || ''} (@${u.username || 'без_юзернейма'}, ID: ${u.id})`;
+        }
+
+        fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: ADMIN_ID, text: `📩 *Новое обращение в поддержку*\n\n*От:* ${senderName}\n\n*Сообщение:* ${text}`, parse_mode: 'Markdown' })
+        }).then(response => {
+            if(response.ok) {
+                setTimeout(() => {
+                    msgs.innerHTML += `<div class="text-left text-white bg-white/10 p-4 rounded-3xl rounded-tl-sm text-sm font-bold mr-10 shadow-lg">⚡ Твое сообщение доставлено. Я свяжусь с тобой в ближайшее время!</div>`;
+                    msgs.scrollTop = msgs.scrollHeight;
+                    if(tg) tg.HapticFeedback.notificationOccurred('success');
+                }, 500);
+            } else { msgs.innerHTML += `<div class="text-center text-red-400 font-bold text-xs mt-2">Ошибка при отправке.</div>`; }
+        });
+    }
+    
+    document.getElementById('chat-input-full').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendSupportMessage(); });
+</script>
+</body>
+</html>
